@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "C:\\Users\\Home\\Desktop\\REPO_Active_Probe\\src\\REPO_Active_Probe\\REPO_Active_Probe.csproj": {}
+    "C:\\Users\\Home\\Desktop\\REPO_Active_Probe_0.4.0\\REPO_Active_Probe.csproj": {}
   },
   "projects": {
-    "C:\\Users\\Home\\Desktop\\REPO_Active_Probe\\src\\REPO_Active_Probe\\REPO_Active_Probe.csproj": {
-      "version": "1.0.0",
+    "C:\\Users\\Home\\Desktop\\REPO_Active_Probe_0.4.0\\REPO_Active_Probe.csproj": {
+      "version": "0.4.0",
       "restore": {
-        "projectUniqueName": "C:\\Users\\Home\\Desktop\\REPO_Active_Probe\\src\\REPO_Active_Probe\\REPO_Active_Probe.csproj",
+        "projectUniqueName": "C:\\Users\\Home\\Desktop\\REPO_Active_Probe_0.4.0\\REPO_Active_Probe.csproj",
         "projectName": "REPO_Active_Probe",
-        "projectPath": "C:\\Users\\Home\\Desktop\\REPO_Active_Probe\\src\\REPO_Active_Probe\\REPO_Active_Probe.csproj",
+        "projectPath": "C:\\Users\\Home\\Desktop\\REPO_Active_Probe_0.4.0\\REPO_Active_Probe.csproj",
         "packagesPath": "C:\\Users\\Home\\.nuget\\packages\\",
-        "outputPath": "C:\\Users\\Home\\Desktop\\REPO_Active_Probe\\src\\REPO_Active_Probe\\obj\\",
+        "outputPath": "C:\\Users\\Home\\Desktop\\REPO_Active_Probe_0.4.0\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\Home\\AppData\\Roaming\\NuGet\\NuGet.Config"

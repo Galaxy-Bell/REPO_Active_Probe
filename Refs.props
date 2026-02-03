@@ -1,23 +1,41 @@
 ﻿<Project>
   <PropertyGroup>
-    <REPO_GAME_DIR>C:\Program Files (x86)\Steam\steamapps\common\REPO</REPO_GAME_DIR>
-    <REPO_MANAGED>C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed</REPO_MANAGED>
-    <REPO_PROFILE>C:\Users\Home\AppData\Roaming\r2modmanPlus-local\REPO\profiles\Default</REPO_PROFILE>
-    <REPO_CORE>C:\Users\Home\AppData\Roaming\r2modmanPlus-local\REPO\profiles\Default\BepInEx\core</REPO_CORE>
+    <!-- ✅ 必改：把这两个路径改成你电脑的真实路径 -->
+
+    <!-- 例：C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed -->
+    <REPO_GAME_MANAGED>C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed</REPO_GAME_MANAGED>
+
+    <!-- 例：C:\Users\Home\AppData\Roaming\r2modmanPlus-local\REPO\profiles\YOURPROFILE\BepInEx\core -->
+    <BEPINEX_CORE>C:\Users\Home\AppData\Roaming\r2modmanPlus-local\REPO\profiles\Default\BepInEx\core</BEPINEX_CORE>
   </PropertyGroup>
 
   <ItemGroup>
-    <Reference Include="BepInEx"><HintPath>C:\Users\Home\AppData\Roaming\r2modmanPlus-local\REPO\profiles\Default\BepInEx\core\BepInEx.dll</HintPath><Private>False</Private></Reference>
-    <Reference Include="0Harmony"><HintPath>C:\Users\Home\AppData\Roaming\r2modmanPlus-local\REPO\profiles\Default\BepInEx\core\0Harmony.dll</HintPath><Private>False</Private></Reference>
+    <!-- BepInEx -->
+    <Reference Include="BepInEx">
+      <HintPath>$(BEPINEX_CORE)\BepInEx.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BEPINEX_CORE)\0Harmony.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
 
-    <Reference Include="UnityEngine"><HintPath>C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed\UnityEngine.dll</HintPath><Private>False</Private></Reference>
-    <Reference Include="UnityEngine.CoreModule"><HintPath>C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed\UnityEngine.CoreModule.dll</HintPath><Private>False</Private></Reference>
-    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath><Private>False</Private></Reference>
-
-    <Reference Include="Assembly-CSharp"><HintPath>C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed\Assembly-CSharp.dll</HintPath><Private>False</Private></Reference>
-
-    <Reference Include="PhotonUnityNetworking"><HintPath>C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed\PhotonUnityNetworking.dll</HintPath><Private>False</Private></Reference>
-    <Reference Include="PhotonRealtime"><HintPath>C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed\PhotonRealtime.dll</HintPath><Private>False</Private></Reference>
-    <Reference Include="Photon3Unity3D"><HintPath>C:\Program Files (x86)\Steam\steamapps\common\REPO\REPO_Data\Managed\Photon3Unity3D.dll</HintPath><Private>False</Private></Reference>
+    <!-- Unity modules (from game's Managed) -->
+    <Reference Include="UnityEngine">
+      <HintPath>$(REPO_GAME_MANAGED)\UnityEngine.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(REPO_GAME_MANAGED)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(REPO_GAME_MANAGED)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.SceneManagementModule">
+      <HintPath>$(REPO_GAME_MANAGED)\UnityEngine.SceneManagementModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
   </ItemGroup>
 </Project>

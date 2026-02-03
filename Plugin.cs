@@ -1,4 +1,4 @@
-using BepInEx;
+﻿using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
 using System;
@@ -8,10 +8,11 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace REPO_Active_Probe
 {
-    [BepInPlugin("GalaxyBell.REPO_Active_Probe", "REPO_Active_Probe", "0.3.6")]
+    [BepInPlugin("GalaxyBell.REPO_Active_Probe", "REPO_Active_Probe", "0.4.0")]
     public class Plugin : BaseUnityPlugin
     {
         // ---------- config ----------
@@ -26,19 +27,29 @@ namespace REPO_Active_Probe
 
         // ---------- runtime ----------
         private Harmony _harmony;
+
         private static readonly object _fileLock = new object();
         private static string LogFile = "";
         private static int MainThreadId = -1;
-        private static bool StaticLogEnabled = true;
+
+        // config snapshot into statics (so static patch class can read)
+        private static bool S_LogEnabled = true;
+        private static bool S_StacksEnabled = true;
+        private static bool S_TraceEnabled = true;
 
         // Trace window (only log selected methods when TraceActive==true)
-        private static bool TraceEnabled = false;
         private static bool TraceActive = false;
         private static float TraceEndTime = 0f;
 
-        // for a bit of rate limiting
+        // rate limiting
         private static int _logLines = 0;
         private const int LOG_LINE_SOFT_CAP = 20000;
+
+        // cached EP list (avoid FindObjectsOfType<MonoBehaviour>() heavy scan every keypress)
+        private static Type _epType;
+        private static List<Component> _cachedEPs = new List<Component>();
+        private static float _lastScanRealtime = -999f;
+        private const float RESCAN_COOLDOWN = 2.0f;
 
         private void Awake()
         {
@@ -53,33 +64,48 @@ namespace REPO_Active_Probe
             KeyTraceToggle = Config.Bind("Keybinds", "TraceToggleKey", KeyCode.F4, "Toggle Trace mode. When ON: F3 auto-opens a trace window.");
 
             InitFileLog();
+
             MainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-            StaticLogEnabled = EnableProbeLog.Value;
 
-            TraceEnabled = EnableTrace.Value;
+            S_LogEnabled = EnableProbeLog.Value;
+            S_StacksEnabled = EnableStacks.Value;
+            S_TraceEnabled = EnableTrace.Value;
 
-            SWL($"=== REPO_Active_Probe 0.3.6 Awake ===");
+            SWL($"=== REPO_Active_Probe 0.4.0 Awake ===");
             SWL($"Unity={Application.unityVersion}");
             SWL($"Time={DateTime.Now:yyyy-MM-dd HH:mm:ss}");
             SWL($"MainTID={MainThreadId}");
-            SWL($"TraceEnabled={TraceEnabled} TraceSeconds={TraceSeconds.Value}");
+            SWL($"TraceEnabled={S_TraceEnabled} TraceSeconds={TraceSeconds.Value}");
             SWL($"Keys: F1={KeyMark.Value} F2={KeyF2_ButtonPress.Value} F3={KeyF3_OnClick.Value} F4={KeyTraceToggle.Value}");
 
             try
             {
                 _harmony = new Harmony("GalaxyBell.REPO_Active_Probe.Harmony");
                 PatchExtractionPoint();
-                PatchTraceCandidates(); // safe: prefixes early-return unless TraceActive
+                PatchTraceCandidates(); // prefix early-return unless TraceActive
                 SWL("=== Probe ready ===");
             }
             catch (Exception e)
             {
                 SWL("[ERR] Harmony patch failed: " + e);
             }
+
+            // scene hook: rescan EPs after load
+            try
+            {
+                SceneManager.sceneLoaded += OnSceneLoaded;
+            }
+            catch { }
         }
 
         private void OnDestroy()
         {
+            try
+            {
+                SceneManager.sceneLoaded -= OnSceneLoaded;
+            }
+            catch { }
+
             try
             {
                 _harmony?.UnpatchSelf();
@@ -88,9 +114,25 @@ namespace REPO_Active_Probe
             catch { }
         }
 
+        private void OnSceneLoaded(Scene s, LoadSceneMode m)
+        {
+            // small delayed scan; game objects may spawn after sceneLoaded
+            try
+            {
+                StartCoroutine(DelayedRescan());
+            }
+            catch { }
+        }
+
+        private System.Collections.IEnumerator DelayedRescan()
+        {
+            yield return new WaitForSeconds(1.0f);
+            ScanExtractionPoints(force: true);
+        }
+
         private void Update()
         {
-            if (!StaticLogEnabled) return;
+            if (!S_LogEnabled) return;
 
             // Trace window end
             if (TraceActive && Time.realtimeSinceStartup > TraceEndTime)
@@ -106,8 +148,8 @@ namespace REPO_Active_Probe
 
             if (Input.GetKeyDown(KeyTraceToggle.Value))
             {
-                TraceEnabled = !TraceEnabled;
-                SWL($"[{Now()}] [TRACE] TraceEnabled={TraceEnabled}");
+                S_TraceEnabled = !S_TraceEnabled;
+                SWL($"[{Now()}] [TRACE] TraceEnabled={S_TraceEnabled}");
             }
 
             if (Input.GetKeyDown(KeyF2_ButtonPress.Value))
@@ -120,8 +162,8 @@ namespace REPO_Active_Probe
             {
                 SWL($"\n===== FORCE TEST (F3 OnClick) {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} =====");
 
-                // open trace window for a short time (only if trace enabled)
-                if (TraceEnabled)
+                // open trace window for a short time
+                if (S_TraceEnabled)
                 {
                     TraceActive = true;
                     TraceEndTime = Time.realtimeSinceStartup + Mathf.Max(0.5f, TraceSeconds.Value);
@@ -138,24 +180,23 @@ namespace REPO_Active_Probe
         {
             try
             {
-                var eps = FindObjectsOfType<MonoBehaviour>()
-                    .Where(mb => mb != null && mb.GetType().Name == "ExtractionPoint")
-                    .ToList();
+                ScanExtractionPoints(force: false);
 
-                SWL($"[{Now()}] [FORCE] ExtractionPoint objects={eps.Count}");
+                SWL($"[{Now()}] [FORCE] ExtractionPoint cached={_cachedEPs.Count}");
 
-                if (eps.Count == 0)
+                if (_cachedEPs.Count == 0)
                 {
                     SWL($"[{Now()}] [FORCE] No ExtractionPoint found.");
                     return;
                 }
 
                 Vector3 refPos = GetReferencePos();
-                MonoBehaviour nearest = null;
+                Component nearest = null;
                 float best = float.MaxValue;
 
-                foreach (var ep in eps)
+                foreach (var ep in _cachedEPs)
                 {
+                    if (ep == null) continue;
                     float d = Vector3.Distance(refPos, ep.transform.position);
                     if (d < best)
                     {
@@ -181,8 +222,9 @@ namespace REPO_Active_Probe
                     return;
                 }
 
-                SWL($"[{Now()}] [FORCE] Invoke: {methodName}()");
-                m.Invoke(nearest, null);
+                var args = BuildDefaultArgs(m);
+                SWL($"[{Now()}] [FORCE] Invoke: {methodName}{FormatSig(m)} argsLen={(args == null ? 0 : args.Length)}");
+                m.Invoke(nearest, args);
                 SWL($"[{Now()}] [FORCE] Invoke done.");
             }
             catch (Exception e)
@@ -191,16 +233,119 @@ namespace REPO_Active_Probe
             }
         }
 
-        private Vector3 GetReferencePos()
+        private static object[] BuildDefaultArgs(MethodInfo mi)
         {
-            // safest on main thread
             try
             {
-                // prefer player camera
+                var ps = mi.GetParameters();
+                if (ps == null || ps.Length == 0) return null;
+
+                var args = new object[ps.Length];
+                for (int i = 0; i < ps.Length; i++)
+                {
+                    var p = ps[i];
+                    if (p.HasDefaultValue)
+                    {
+                        args[i] = p.DefaultValue;
+                        continue;
+                    }
+
+                    var pt = p.ParameterType;
+
+                    // ref/out -> just null / default
+                    if (pt.IsByRef)
+                    {
+                        pt = pt.GetElementType();
+                    }
+
+                    if (pt == null)
+                    {
+                        args[i] = null;
+                        continue;
+                    }
+
+                    // reference types
+                    if (!pt.IsValueType)
+                    {
+                        args[i] = null;
+                        continue;
+                    }
+
+                    // structs / primitives
+                    try
+                    {
+                        args[i] = Activator.CreateInstance(pt);
+                    }
+                    catch
+                    {
+                        args[i] = null;
+                    }
+                }
+                return args;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private void ScanExtractionPoints(bool force)
+        {
+            try
+            {
+                float now = Time.realtimeSinceStartup;
+                if (!force && (now - _lastScanRealtime) < RESCAN_COOLDOWN) return;
+
+                _lastScanRealtime = now;
+
+                if (_epType == null)
+                {
+                    _epType = AppDomain.CurrentDomain.GetAssemblies()
+                        .SelectMany(a =>
+                        {
+                            try { return a.GetTypes(); } catch { return Array.Empty<Type>(); }
+                        })
+                        .FirstOrDefault(t => t != null && t.Name == "ExtractionPoint");
+                }
+
+                if (_epType == null)
+                {
+                    // don't spam
+                    return;
+                }
+
+                // Use Unity overload by Type (no compile-time dependency)
+                var found = UnityEngine.Object.FindObjectsOfType(_epType);
+                _cachedEPs = found
+                    .OfType<Component>()
+                    .Where(c => c != null)
+                    .ToList();
+
+                SWL($"[{Now()}] [SCAN] EP rescan done: {_cachedEPs.Count}");
+            }
+            catch (Exception e)
+            {
+                SWL($"[{Now()}] [ERR] ScanExtractionPoints failed: {e.GetType().Name} {e.Message}");
+            }
+        }
+
+        private Vector3 GetReferencePos()
+        {
+            try
+            {
                 if (Camera.main != null) return Camera.main.transform.position;
             }
             catch { }
 
+            // Try player-tag object (common in many Unity games)
+            try
+            {
+                var p = GameObject.FindWithTag("Player");
+                if (p != null) return p.transform.position;
+            }
+            catch { }
+
+            // fallback: 0
             return Vector3.zero;
         }
 
@@ -208,30 +353,30 @@ namespace REPO_Active_Probe
 
         private void PatchExtractionPoint()
         {
-            // We don't reference game type at compile time; locate by name in loaded assemblies.
-            var epType = AppDomain.CurrentDomain.GetAssemblies()
+            _epType = AppDomain.CurrentDomain.GetAssemblies()
                 .SelectMany(a =>
                 {
                     try { return a.GetTypes(); } catch { return Array.Empty<Type>(); }
                 })
                 .FirstOrDefault(t => t != null && t.Name == "ExtractionPoint");
 
-            if (epType == null)
+            if (_epType == null)
             {
                 SWL("[REF] ExtractionPoint type NOT FOUND.");
                 return;
             }
 
-            var mButtonPress = epType.GetMethod("ButtonPress", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var mOnClick = epType.GetMethod("OnClick", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var mStateSet = epType.GetMethod("StateSet", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var mStateSetRPC = epType.GetMethod("StateSetRPC", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var mHaulGoal = epType.GetMethod("HaulGoalSetRPC", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var mSurplus = epType.GetMethod("ExtractionPointSurplusRPC", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var mDeny = epType.GetMethod("ButtonDenyRPC", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            var mAuto = epType.GetMethod("ActivateTheFirstExtractionPointAutomaticallyWhenAPlayerLeaveTruck", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var mButtonPress = _epType.GetMethod("ButtonPress", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var mOnClick = _epType.GetMethod("OnClick", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var mStateSet = _epType.GetMethod("StateSet", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var mStateSetRPC = _epType.GetMethod("StateSetRPC", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var mHaulGoal = _epType.GetMethod("HaulGoalSetRPC", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var mSurplus = _epType.GetMethod("ExtractionPointSurplusRPC", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var mDeny = _epType.GetMethod("ButtonDenyRPC", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            var mAuto = _epType.GetMethod("ActivateTheFirstExtractionPointAutomaticallyWhenAPlayerLeaveTruck",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 
-            SWL($"[REF] ExtractionPoint type={epType.FullName} ButtonPress={(mButtonPress != null)} OnClick={(mOnClick != null)}");
+            SWL($"[REF] ExtractionPoint type={_epType.FullName} ButtonPress={(mButtonPress != null)} OnClick={(mOnClick != null)}");
 
             PatchIf(mOnClick, "EP.OnClick");
             PatchIf(mButtonPress, "EP.ButtonPress");
@@ -249,7 +394,7 @@ namespace REPO_Active_Probe
             {
                 if (mi == null)
                 {
-                    SWL("[PATCH] SKIP " + label + " (missing)");
+                    SWL($"[PATCH] SKIP {label} (missing)");
                     return;
                 }
 
@@ -275,9 +420,8 @@ namespace REPO_Active_Probe
             catch { return "()"; }
         }
 
-        // patch a small set of candidate methods that likely relate to:
-        // map markers / white dots / UI toasts / money displays
-        // IMPORTANT: prefix returns immediately unless TraceActive == true
+        // Trace patched methods: log ONLY inside trace window.
+        // v0.4.0 改进：减少 patch 数量 + 更严格过滤，避免卡加载/爆日志
         private void PatchTraceCandidates()
         {
             int patched = 0;
@@ -287,7 +431,7 @@ namespace REPO_Active_Probe
             {
                 "Map","MiniMap","Minimap","Marker","Waypoint","Ping","Indicator","Compass",
                 "Toast","Popup","Notify","Notification","Money","Value","Reward","Price",
-                "Extraction","Haul","Goal"
+                "Extraction","Haul","Goal","HUD","UI"
             };
 
             var asm = AppDomain.CurrentDomain.GetAssemblies()
@@ -300,34 +444,45 @@ namespace REPO_Active_Probe
             }
 
             Type[] types;
-            try { types = asm.GetTypes(); } catch { types = Array.Empty<Type>(); }
+            try { types = asm.GetTypes(); }
+            catch { types = Array.Empty<Type>(); }
 
             foreach (var t in types)
             {
                 if (t == null) continue;
 
                 MethodInfo[] ms;
-                try { ms = t.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic); } catch { continue; }
+                try
+                {
+                    ms = t.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                }
+                catch { continue; }
 
                 foreach (var m in ms)
                 {
                     if (m == null) continue;
                     considered++;
 
-                    // skip property getters/setters and compiler gen
                     if (m.IsSpecialName) continue;
                     if (m.DeclaringType == null) continue;
 
+                    // avoid patching huge generic / iterator / compiler-gen noise
                     var name = m.Name ?? "";
+                    if (name.StartsWith("<")) continue;
+
+                    // keep trace lightweight
+                    var ps = m.GetParameters();
+                    if (ps != null && ps.Length > 3) continue;
+
                     var typeName = m.DeclaringType.Name ?? "";
 
-                    bool hit = keywords.Any(k => name.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0
-                                              || typeName.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0);
+                    bool hit = keywords.Any(k =>
+                        name.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0
+                        || typeName.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0);
 
                     if (!hit) continue;
 
-                    // avoid patching too many
-                    if (patched >= 160) break;
+                    if (patched >= 80) break;
 
                     try
                     {
@@ -338,7 +493,7 @@ namespace REPO_Active_Probe
                     catch { }
                 }
 
-                if (patched >= 160) break;
+                if (patched >= 80) break;
             }
 
             SWL($"[TRACE] candidate methods considered={considered}, patched={patched} (logs only when TraceActive=true)");
@@ -353,6 +508,7 @@ namespace REPO_Active_Probe
                 string dir = Path.Combine(Paths.ConfigPath, "REPO_Active_Probe", "logs");
                 Directory.CreateDirectory(dir);
                 LogFile = Path.Combine(dir, $"REPO_Active_Probe_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+
                 lock (_fileLock)
                 {
                     File.AppendAllText(LogFile, $"[FileLog] {LogFile}{Environment.NewLine}", Encoding.UTF8);
@@ -368,7 +524,7 @@ namespace REPO_Active_Probe
         {
             try
             {
-                if (!StaticLogEnabled) return;
+                if (!S_LogEnabled) return;
                 if (string.IsNullOrEmpty(LogFile)) return;
 
                 lock (_fileLock)
@@ -382,8 +538,6 @@ namespace REPO_Active_Probe
             }
             catch { }
         }
-
-        // ----------------- patches impl -----------------
 
         internal class Patches
         {
@@ -399,7 +553,7 @@ namespace REPO_Active_Probe
                     // non-main thread: never touch Unity objects
                     if (!OnMainThread())
                     {
-                        SWL($"[{Now()}] [EP][T{Tid()}] PRE {tName}.{mName} argsLen={( __args==null ? 0 : __args.Length)}");
+                        SWL($"[{Now()}] [EP][T{Tid()}] PRE {tName}.{mName} argsLen={(__args == null ? 0 : __args.Length)}");
                         return;
                     }
 
@@ -412,10 +566,9 @@ namespace REPO_Active_Probe
                     }
 
                     string args = DumpArgs(__args);
-                    SWL($"[{Now()}] [EP][T{Tid()}] PRE {tName}.{mName} go={goName} pos={pos} argsLen={( __args==null ? 0 : __args.Length)} args={args}");
+                    SWL($"[{Now()}] [EP][T{Tid()}] PRE {tName}.{mName} go={goName} pos={pos} argsLen={(__args == null ? 0 : __args.Length)} args={args}");
 
-                    // stack origin dump for ButtonPress / OnClick only
-                    if (EnableStacksSafe() && (mName == "ButtonPress" || mName == "OnClick"))
+                    if (S_StacksEnabled && (mName == "ButtonPress" || mName == "OnClick"))
                     {
                         DumpStackIfNeeded(mName);
                     }
@@ -434,7 +587,6 @@ namespace REPO_Active_Probe
                 catch { }
             }
 
-            // Trace patched methods: log ONLY inside trace window.
             public static void TracePrefix(MethodBase __originalMethod)
             {
                 try
@@ -443,7 +595,6 @@ namespace REPO_Active_Probe
 
                     string mName = __originalMethod?.Name ?? "nullMethod";
                     string tName = __originalMethod?.DeclaringType?.FullName ?? "nullType";
-                    // keep it short
                     SWL($"[{Now()}] [TR][T{Tid()}] {tName}.{mName}");
                 }
                 catch { }
@@ -454,7 +605,6 @@ namespace REPO_Active_Probe
                 try
                 {
                     if (args == null || args.Length == 0) return "[]";
-                    // keep it short; avoid deep object ToString on weird Unity objects
                     var parts = new List<string>();
                     for (int i = 0; i < args.Length; i++)
                     {
@@ -478,29 +628,16 @@ namespace REPO_Active_Probe
                 try
                 {
                     string stack = Environment.StackTrace ?? "";
-                    // determine origin
-                    string origin = stack.Contains("RuntimeMethodInfo.Invoke") || stack.Contains("MethodBase.Invoke")
+                    string origin = (stack.Contains("RuntimeMethodInfo.Invoke") || stack.Contains("MethodBase.Invoke"))
                         ? "REFLECT"
                         : "NATIVE";
 
                     SWL($"[{Now()}] [EP][T{Tid()}] STACK {method} origin={origin}");
-                    // dump stack with indentation, but not too huge
                     var lines = stack.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Take(40);
                     foreach (var l in lines)
                         SWL("      " + l);
                 }
                 catch { }
-            }
-
-            private static bool EnableStacksSafe()
-            {
-                try
-                {
-                    // config is instance-bound; simplest: always true here because user can disable in cfg if needed
-                    // (we keep it stable to avoid null refs)
-                    return true;
-                }
-                catch { return true; }
             }
         }
     }

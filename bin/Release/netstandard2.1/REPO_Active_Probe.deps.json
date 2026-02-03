@@ -7,7 +7,7 @@
   "targets": {
     ".NETStandard,Version=v2.1": {},
     ".NETStandard,Version=v2.1/": {
-      "REPO_Active_Probe/1.0.0": {
+      "REPO_Active_Probe/0.4.0": {
         "runtime": {
           "REPO_Active_Probe.dll": {}
         }
@@ -15,7 +15,7 @@
     }
   },
   "libraries": {
-    "REPO_Active_Probe/1.0.0": {
+    "REPO_Active_Probe/0.4.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""
